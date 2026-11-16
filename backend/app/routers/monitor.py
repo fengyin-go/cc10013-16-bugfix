@@ -1,4 +1,8 @@
-"""采集监控接口：维护监控指标，覆盖提交校验、启用监控、停用监控等动作。"""
+"""采集监控接口：维护监控指标，覆盖提交校验、启用监控、停用监控等动作。
+
+端点监控待办区接收凭证管理回写的过期窗口；认证窗口回显直接读取凭证管理
+的同一份认证记录。
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -30,6 +34,29 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+@router.get("/todos")
+def list_todos() -> dict[str, Any]:
+    """端点监控待办区：接收凭据生效数据集回写的过期记录。"""
+    items = service.list_todos()
+    return {"module": "monitor", "total": len(items), "items": items}
+
+
+@router.get("/auth-windows/{credential_no}")
+def auth_window(credential_no: str) -> dict[str, Any]:
+    """认证窗口回显：按凭证编号读取凭证管理中的同一份认证记录（含旧记录）。"""
+    entry = service.get_auth_window(credential_no)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"凭证编号 {credential_no} 没有对应的认证记录")
+    return entry
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出采集监控清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "monitor", "total": total, "items": items}
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条监控指标明细；不存在时给出可读的错误说明。"""
@@ -56,10 +83,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出采集监控清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "monitor", "total": total, "items": items}

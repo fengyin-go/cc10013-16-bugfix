@@ -23,6 +23,13 @@
         <span>{{ field }}</span>
         <input v-model="filters[field]" :placeholder="`按${field}检索`" />
       </label>
+      <label class="filter-item">
+        <span>状态</span>
+        <select v-model="statusFilter">
+          <option value="">全部</option>
+          <option v-for="status in statuses" :key="status" :value="status">{{ status }}</option>
+        </select>
+      </label>
       <button class="btn" type="submit">查询</button>
       <button class="btn ghost" type="button" @click="resetFilters">重置条件</button>
     </form>
@@ -31,15 +38,23 @@
       <thead>
         <tr>
           <th v-for="column in columns" :key="column">{{ column }}</th>
+          <th>状态</th>
+          <th>认证窗口</th>
+          <th>在途批次</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
           <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td>
+            <span :class="['status-tag', statusClass(row.status)]">{{ row.status ?? '—' }}</span>
+          </td>
+          <td>{{ row['认证窗口'] ?? '—' }}</td>
+          <td>{{ row['在途批次'] ?? '—' }}</td>
           <td class="row-actions">
             <button
-              v-for="action in actions"
+              v-for="action in availableActions(row.status)"
               :key="action"
               class="link"
               type="button"
@@ -47,10 +62,11 @@
             >
               {{ action }}
             </button>
+            <span v-if="!availableActions(row.status).length" class="empty-state">已到状态终点</span>
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 1" class="empty-state">暂无凭证管理数据，可先登记认证凭证</td>
+          <td :colspan="columns.length + 4" class="empty-state">暂无凭证管理数据，可先登记认证凭证</td>
         </tr>
       </tbody>
     </table>
@@ -63,7 +79,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import { request } from '@/api/client'
 
@@ -71,18 +87,44 @@ type Row = Record<string, string | number | null>
 
 const ENDPOINT = '/api/auth'
 const columns = ["凭证编号", "关联端点", "认证类型", "凭证密钥", "轮换策略", "有效期天数", "过期告警", "自动刷新"]
-const actions = ["提交生效", "启用凭证", "标记失效"]
-const statuses = ["草稿", "待生效", "已生效", "已失效"]
-const stats = [{"label": "认证凭证总数", "value": 0}, {"label": "已生效凭证", "value": 0}, {"label": "待生效凭证", "value": 0}]
+// 状态只能按待生效、生效、失效单向推进，失效凭据不提供任何可执行动作。
+const statuses = ["草稿", "待生效", "生效", "失效"]
+const NEXT_ACTION: Record<string, string> = {
+  '草稿': '提交生效',
+  '待生效': '启用凭证',
+  '生效': '标记失效',
+}
 
 const rows = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
+const statusFilter = ref('')
 const filterFields = columns.slice(0, 3)
+
+const stats = computed(() => [
+  { label: "认证凭证总数", value: rows.value.length },
+  { label: "生效凭证", value: rows.value.filter((row) => row.status === '生效').length },
+  { label: "待生效凭证", value: rows.value.filter((row) => row.status === '待生效').length },
+  { label: "失效凭证", value: rows.value.filter((row) => row.status === '失效').length },
+])
+
+function availableActions(status: string | number | null): string[] {
+  const action = NEXT_ACTION[String(status ?? '')]
+  return action ? [action] : []
+}
+
+function statusClass(status: string | number | null): string {
+  const value = String(status ?? '')
+  if (value === '生效') return 'is-active'
+  if (value === '失效') return 'is-expired'
+  if (value === '待生效') return 'is-pending'
+  return ''
+}
 
 function resetFilters() {
   filters.value = {}
+  statusFilter.value = ''
   void reload()
 }
 
@@ -99,10 +141,11 @@ async function runAction(action: string, row: Row) {
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values: { action } }),
     })
-    if (!response.ok) {
-      throw new Error('凭证管理动作未生效，请稍后重试')
+    const payload = await response.json()
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.message ?? '凭证管理动作未生效，请稍后重试')
     }
     await reload()
   } catch (error) {
@@ -112,9 +155,12 @@ async function runAction(action: string, row: Row) {
 
 async function reload() {
   errorMessage.value = ''
-  const query = new URLSearchParams(filters.value as Record<string, string>).toString()
+  const query = new URLSearchParams(filters.value as Record<string, string>)
+  if (statusFilter.value) {
+    query.set('status', statusFilter.value)
+  }
   try {
-    const response = await request(`${ENDPOINT}?${query}`)
+    const response = await request(`${ENDPOINT}?${query.toString()}`)
     if (!response.ok) {
       throw new Error('认证凭证列表读取失败')
     }
@@ -128,3 +174,28 @@ async function reload() {
 
 onMounted(reload)
 </script>
+
+<style scoped>
+.status-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+}
+.status-tag.is-active {
+  color: #067647;
+  background: #ecfdf3;
+  border-color: #abefc6;
+}
+.status-tag.is-expired {
+  color: #b42318;
+  background: #fef3f2;
+  border-color: #fda29b;
+}
+.status-tag.is-pending {
+  color: #b54708;
+  background: #fffaeb;
+  border-color: #fedf89;
+}
+</style>

@@ -18,6 +18,23 @@
       </article>
     </div>
 
+    <h3 class="section-title">端点监控待办区（凭据过期窗口）</h3>
+    <table class="data-table todo-table">
+      <thead>
+        <tr>
+          <th v-for="column in todoColumns" :key="column">{{ column }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="row in todos" :key="String(row.id)">
+          <td v-for="column in todoColumns" :key="column">{{ row[column] ?? '—' }}</td>
+        </tr>
+        <tr v-if="!todos.length">
+          <td :colspan="todoColumns.length" class="empty-state">暂无凭据过期待办</td>
+        </tr>
+      </tbody>
+    </table>
+
     <form class="filter-bar" @submit.prevent="reload">
       <label v-for="field in filterFields" :key="field" class="filter-item">
         <span>{{ field }}</span>
@@ -73,13 +90,21 @@ const ENDPOINT = '/api/monitor'
 const columns = ["指标编号", "关联端点", "成功率阈值", "延迟阈值", "错误率告警", "检测频率", "通知渠道", "静默分钟"]
 const actions = ["提交校验", "启用监控", "停用监控"]
 const statuses = ["草稿", "待校验", "已启用", "已停用"]
-const stats = [{"label": "监控指标总数", "value": 0}, {"label": "已启用指标", "value": 0}, {"label": "待校验指标", "value": 0}]
+// 待办区直接展示凭据生效数据集回写的过期记录，认证窗口回显同一份认证记录。
+const todoColumns = ["待办编号", "关联端点", "认证窗口", "过期时间", "过期告警", "轮换策略", "待办事项"]
 
 const rows = ref<Row[]>([])
+const todos = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+
+const stats = ref([
+  { label: "监控指标总数", value: 0 },
+  { label: "已启用指标", value: 0 },
+  { label: "凭据过期待办", value: 0 },
+])
 
 function resetFilters() {
   filters.value = {}
@@ -99,10 +124,11 @@ async function runAction(action: string, row: Row) {
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values: { action } }),
     })
-    if (!response.ok) {
-      throw new Error('采集监控动作未生效，请稍后重试')
+    const payload = await response.json()
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.message ?? '采集监控动作未生效，请稍后重试')
     }
     await reload()
   } catch (error) {
@@ -110,17 +136,31 @@ async function runAction(action: string, row: Row) {
   }
 }
 
+async function reloadTodos() {
+  const response = await request(`${ENDPOINT}/todos`)
+  if (!response.ok) {
+    throw new Error('端点监控待办区读取失败')
+  }
+  const payload = await response.json()
+  todos.value = payload.items ?? []
+}
+
 async function reload() {
   errorMessage.value = ''
   const query = new URLSearchParams(filters.value as Record<string, string>).toString()
   try {
-    const response = await request(`${ENDPOINT}?${query}`)
-    if (!response.ok) {
+    const [listResponse] = await Promise.all([request(`${ENDPOINT}?${query}`), reloadTodos()])
+    if (!listResponse.ok) {
       throw new Error('监控指标列表读取失败')
     }
-    const payload = await response.json()
+    const payload = await listResponse.json()
     rows.value = payload.items ?? []
     total.value = payload.total ?? rows.value.length
+    stats.value = [
+      { label: "监控指标总数", value: rows.value.length },
+      { label: "已启用指标", value: rows.value.filter((row) => row.status === '已启用').length },
+      { label: "凭据过期待办", value: todos.value.length },
+    ]
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '采集监控列表读取失败'
   }
@@ -128,3 +168,13 @@ async function reload() {
 
 onMounted(reload)
 </script>
+
+<style scoped>
+.section-title {
+  font-size: 15px;
+  margin: 8px 0;
+}
+.todo-table {
+  margin-bottom: 18px;
+}
+</style>

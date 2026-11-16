@@ -1,4 +1,8 @@
-"""采集监控业务规则：状态流转、字段校验与筛选口径都收在这里。"""
+"""采集监控业务规则：状态流转、字段校验与筛选口径都收在这里。
+
+端点监控待办区除了常规监控指标，还接收凭据管理回写的过期窗口待办；
+认证窗口回显直接读取凭证管理（auth）的同一份认证记录，不另存副本。
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -6,10 +10,15 @@ from typing import Any
 from app.store import store
 
 MODULE = "monitor"
+AUTH_MODULE = "auth"
 REQUIRED_FIELDS = ["指标编号", "关联端点", "成功率阈值"]
 STATUS_ORDER = ["草稿", "待校验", "已启用", "已停用"]
 ACTION_RULES = {"提交校验": "待校验", "启用监控": "已启用", "停用监控": "已停用"}
 NEGATIVE_ACTIONS = ["停用监控"]
+
+# 由凭据过期窗口回写进来的待办记录标记。
+AUTH_TODO_SOURCE = "auth"
+AUTH_TODO_PREFIX = "AUTH-EXPIRE-"
 
 
 class MonitorService:
@@ -59,3 +68,19 @@ class MonitorService:
         entry["pending"] = target != STATUS_ORDER[-1]
         entry["abnormal"] = action in NEGATIVE_ACTIONS
         return entry, f"监控指标已{action}"
+
+    def list_todos(self) -> list[dict[str, Any]]:
+        """端点监控待办区：返回凭据过期窗口回写的待办记录。"""
+        return [
+            row for row in store.rows(MODULE)
+            if str(row.get("来源") or "") == AUTH_TODO_SOURCE
+            and str(row.get("待办编号", "")).startswith(AUTH_TODO_PREFIX)
+        ]
+
+    def get_auth_window(self, credential_no: str) -> dict[str, Any] | None:
+        """认证窗口回显：按凭证编号读取凭证管理里的同一份认证记录。"""
+        credential_no = str(credential_no or "").strip()
+        for row in store.rows(AUTH_MODULE):
+            if str(row.get("凭证编号") or "").strip() == credential_no:
+                return row
+        return None
